@@ -1,126 +1,204 @@
-import { TranscriptionResult, SummaryResult, PDFResult, ChatResult } from '../types';
+import { invoke } from '@tauri-apps/api/tauri';
+import { TranscriptionResult, PDFResult, ChatResult, ChatHistoryResponse, SessionContextResponse, ChatMessage, ActionPlan } from '../types';
 
-// Mock gRPC client for now - in a real implementation, this would use actual gRPC-web
-// For this demo, we'll simulate the backend calls
+type TranscriptionCommandResult = {
+  success: boolean;
+  sessionId: string;
+  transcription: string;
+  errorMessage?: string;
+  videoFilename?: string;
+};
+
+type ChatCommandResult = {
+  success: boolean;
+  response: string;
+  errorMessage?: string;
+  sessionId: string;
+  actionPlan?: ActionPlan;
+};
+
+type ChatHistoryCommandResult = {
+  success: boolean;
+  messages: Array<{
+    id: string;
+    role: string;
+    content: string;
+    timestamp: string;
+  }>;
+};
+
+type SessionContextCommandResult = {
+  success: boolean;
+  errorMessage?: string;
+  session?: {
+    session_id: string;
+    video_filename?: string | null;
+    transcription?: string | null;
+    summary?: string | null;
+    created_at?: string | null;
+    updated_at?: string | null;
+  };
+};
+
+type PdfCommandResult = {
+  success: boolean;
+  pdfData: number[];
+  filename: string;
+  errorMessage?: string;
+};
 
 export class VideoAnalysisService {
-  private baseUrl = 'http://localhost:50051';
-
-  async transcribeVideo(videoData: Uint8Array, filename: string): Promise<TranscriptionResult> {
+  async transcribeVideoFromPath(filePath: string, sessionId: string): Promise<TranscriptionResult> {
     try {
-      // Simulate API call delay
-      await this.delay(2000);
-      
-      // For demo purposes, return a mock transcription
-      // In real implementation, this would send videoData to the backend
-      const mockTranscription = `This is a mock transcription for the video file: ${filename}. 
-      In a real implementation, this would be the actual speech-to-text output from the Whisper model.
-      The video content would be processed by the backend transcription agent using Hugging Face models.`;
-      
+      const result = await invoke<TranscriptionCommandResult>('transcribe_video', {
+        sessionId,
+        filePath,
+      });
+
       return {
-        transcription: mockTranscription,
-        success: true,
-        sessionId: 'mock-session-id'
+        transcription: result.transcription,
+        success: result.success,
+        errorMessage: result.errorMessage || '',
+        sessionId: result.sessionId,
       };
     } catch (error) {
+      console.error('Transcription error:', error);
       return {
         transcription: '',
         success: false,
         errorMessage: error instanceof Error ? error.message : 'Unknown error',
-        sessionId: ''
-      };
-    }
-  }
-
-  async summarizeTranscription(transcription: string, sessionId: string): Promise<SummaryResult> {
-    try {
-      await this.delay(1500);
-      
-      const mockSummary = `Summary of the transcribed content:
-      
-      This video discusses various topics related to AI and machine learning. 
-      Key points include the importance of local processing, privacy considerations, 
-      and the effectiveness of quantized models for desktop applications.
-      
-      The content demonstrates practical applications of AI technology in 
-      real-world scenarios, emphasizing user-friendly interfaces and offline capabilities.`;
-      
-      return {
-        summary: mockSummary,
-        success: true
-      };
-    } catch (error) {
-      return {
-        summary: '',
-        success: false,
-        errorMessage: error instanceof Error ? error.message : 'Unknown error'
+        sessionId,
       };
     }
   }
 
   async generatePDF(content: string, title: string, sessionId: string): Promise<PDFResult> {
     try {
-      await this.delay(1000);
-      
-      // Mock PDF generation - in real implementation, this would return actual PDF bytes
-      const mockPdfData = new Uint8Array([0x25, 0x50, 0x44, 0x46]); // PDF header bytes
-      
+      const result = await invoke<PdfCommandResult>('generate_pdf', {
+        sessionId,
+        content,
+        title,
+      });
+
+      if (!result.success) {
+        throw new Error(result.errorMessage || 'Failed to generate PDF');
+      }
+
+      const pdfData = new Uint8Array(result.pdfData);
+      const blob = new Blob([pdfData], { type: 'application/pdf' });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = result.filename;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+
       return {
-        pdfData: mockPdfData,
+        pdfData,
         success: true,
-        filename: `${title.replace(/\s+/g, '_')}.pdf`
+        filename: result.filename,
       };
     } catch (error) {
+      console.error('PDF generation error:', error);
       return {
         pdfData: new Uint8Array(),
         success: false,
         errorMessage: error instanceof Error ? error.message : 'Unknown error',
-        filename: ''
+        filename: '',
       };
     }
-  }
-
-  private delay(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
   }
 }
 
 export class LLMChatService {
-  private baseUrl = 'http://localhost:50051';
-
   async sendMessage(message: string, sessionId: string, context?: string): Promise<ChatResult> {
     try {
-      await this.delay(1500);
-      
-      // Mock LLM response - in real implementation, this would use the local LLM
-      let mockResponse = '';
-      
-      if (message.toLowerCase().includes('transcribe')) {
-        mockResponse = "I can help you transcribe video files. Please upload a video file using the upload area above, and I'll process it using our local speech-to-text model.";
-      } else if (message.toLowerCase().includes('summarize')) {
-        mockResponse = "I can create summaries of transcribed content. Once you have a transcription, I can generate a concise summary and even create a PDF document for you.";
-      } else if (message.toLowerCase().includes('pdf')) {
-        mockResponse = "I can generate PDF documents from summaries and transcriptions. This is useful for creating reports or saving content for offline reading.";
-      } else {
-        mockResponse = `I'm a local AI assistant running on your machine. I can help with video transcription, summarization, PDF generation, and answer general questions. Your message was: "${message}"`;
-      }
-      
+      const result = await invoke<ChatCommandResult>('send_chat_message', {
+        sessionId,
+        message,
+        context: context || null,
+      });
+
       return {
-        response: mockResponse,
-        success: true,
-        sessionId
+        response: result.response,
+        success: result.success,
+        errorMessage: result.errorMessage || '',
+        sessionId: result.sessionId,
+        actionPlan: result.actionPlan,
       };
     } catch (error) {
+      console.error('Chat error:', error);
       return {
         response: '',
         success: false,
         errorMessage: error instanceof Error ? error.message : 'Unknown error',
-        sessionId
+        sessionId,
       };
     }
   }
 
-  private delay(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+  async getChatHistory(sessionId: string, limit: number = 50): Promise<ChatHistoryResponse> {
+    try {
+      const result = await invoke<ChatHistoryCommandResult>('get_chat_history', {
+        sessionId,
+        limit,
+      });
+
+      const messages: ChatMessage[] = (result.messages || []).map((msg) => ({
+        id: msg.id,
+        role: (msg.role as ChatMessage['role']) || 'assistant',
+        content: msg.content,
+        timestamp: msg.timestamp ? new Date(msg.timestamp).getTime() : Date.now(),
+        sessionId,
+      }));
+
+      return {
+        success: result.success,
+        messages,
+        errorMessage: '',
+      };
+    } catch (error) {
+      console.error('Chat history error:', error);
+      return {
+        messages: [],
+        success: false,
+        errorMessage: error instanceof Error ? error.message : 'Unknown error',
+      };
+    }
+  }
+
+  async getSessionContext(sessionId: string): Promise<SessionContextResponse> {
+    try {
+      const result = await invoke<SessionContextCommandResult>('get_session_context', {
+        sessionId,
+      });
+
+      return {
+        success: result.success,
+        errorMessage: result.errorMessage,
+        session: result.session,
+      };
+    } catch (error) {
+      console.error('Get session context error:', error);
+      return {
+        success: false,
+        errorMessage: error instanceof Error ? error.message : 'Unknown error',
+      };
+    }
+  }
+
+  async clearHistory(sessionId: string): Promise<{ success: boolean; errorMessage?: string }> {
+    try {
+      await invoke('clear_chat_history', { sessionId });
+      return { success: true };
+    } catch (error) {
+      console.error('Clear history error:', error);
+      return {
+        success: false,
+        errorMessage: error instanceof Error ? error.message : 'Unknown error',
+      };
+    }
   }
 }

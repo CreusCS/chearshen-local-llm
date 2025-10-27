@@ -1,0 +1,102 @@
+syntax = "proto3";
+
+package videoanalyzer;
+
+import "google/protobuf/empty.proto";
+
+service VideoAnalyzer {
+  rpc TranscribeVideo (stream VideoUploadChunk) returns (TranscriptionResponse);
+  rpc Chat (ChatRequest) returns (ChatResponse);
+  rpc GetChatHistory (ChatHistoryRequest) returns (ChatHistoryResponse);
+  rpc ClearChatHistory (SessionRequest) returns (google.protobuf.Empty);
+  rpc GeneratePdf (GeneratePdfRequest) returns (GeneratePdfResponse);
+  rpc GetSessionContext (SessionRequest) returns (SessionContextResponse);
+  rpc Health (google.protobuf.Empty) returns (HealthResponse);
+}
+
+message VideoUploadChunk {
+  bytes data = 1;
+  string filename = 2;
+  string session_id = 3;
+}
+
+message TranscriptionResponse {
+  bool success = 1;
+  string session_id = 2;
+  string transcription = 3;
+  string error_message = 4;
+  string video_filename = 5;
+}
+
+message ChatRequest {
+  string session_id = 1;
+  string message = 2;
+  string context = 3;
+}
+
+message ActionPlan {
+  string action_type = 1;
+  string status = 2;
+  string parameters_json = 3;
+  repeated string missing_params = 4;
+  string clarification_question = 5;
+  string confirmation_message = 6;
+  bool requires_user_input = 7;
+}
+
+message ChatResponse {
+  bool success = 1;
+  string session_id = 2;
+  string response_text = 3;
+  string error_message = 4;
+  ActionPlan action_plan = 5;
+}
+
+message ChatHistoryRequest {
+  string session_id = 1;
+  int32 limit = 2;
+}
+
+message ChatMessage {
+  string id = 1;
+  string role = 2;
+  string content = 3;
+  string timestamp = 4;
+}
+
+message ChatHistoryResponse {
+  repeated ChatMessage messages = 1;
+}
+
+message GeneratePdfRequest {
+  string content = 1;
+  string title = 2;
+  string session_id = 3;
+}
+
+message GeneratePdfResponse {
+  bool success = 1;
+  bytes pdf_data = 2;
+  string filename = 3;
+  string error_message = 4;
+}
+
+message SessionRequest {
+  string session_id = 1;
+}
+
+message SessionContextResponse {
+  bool success = 1;
+  string error_message = 2;
+  string session_id = 3;
+  string video_filename = 4;
+  string transcription = 5;
+  string summary = 6;
+  string created_at = 7;
+  string updated_at = 8;
+}
+
+message HealthResponse {
+  string status = 1;
+  map<string, string> services = 2;
+}

@@ -82,19 +82,23 @@ echo Creating startup scripts...
 cd ..
 
 REM Backend startup script
-echo @echo off > start_backend.bat
-echo cd backend >> start_backend.bat
-echo call venv\Scripts\activate >> start_backend.bat
-echo echo Starting AI Video Analyzer Backend... >> start_backend.bat
-echo python main.py >> start_backend.bat
-echo pause >> start_backend.bat
+if not exist start_backend.bat (
+    echo @echo off > start_backend.bat
+    echo cd backend >> start_backend.bat
+    echo call venv\Scripts\activate >> start_backend.bat
+    echo echo Starting AI Video Analyzer Backend... >> start_backend.bat
+    echo python grpc_server.py >> start_backend.bat
+    echo pause >> start_backend.bat
+)
 
 REM Frontend startup script
-echo @echo off > start_frontend.bat
-echo cd frontend >> start_frontend.bat
-echo echo Starting AI Video Analyzer Frontend... >> start_frontend.bat
-echo npm run tauri dev >> start_frontend.bat
-echo pause >> start_frontend.bat
+if not exist start_frontend.bat (
+    echo @echo off > start_frontend.bat
+    echo cd frontend >> start_frontend.bat
+    echo echo Starting AI Video Analyzer Frontend... >> start_frontend.bat
+    echo npm run tauri dev >> start_frontend.bat
+    echo pause >> start_frontend.bat
+)
 
 echo.
 echo 🎉 Setup complete!

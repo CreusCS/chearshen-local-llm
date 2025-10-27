@@ -1,10 +1,7 @@
 # Backend requirements for AI Video Analyzer
 
-# Core dependencies
-grpcio
-grpcio-tools
-grpcio-reflection
-protobuf
+# MCP (Model Context Protocol)
+mcp
 
 # Machine Learning libraries
 torch
@@ -12,6 +9,11 @@ torchaudio
 transformers
 accelerate
 bitsandbytes
+
+# gRPC transport
+grpcio
+grpcio-tools
+protobuf
 
 # Video processing
 moviepy

@@ -35,9 +35,17 @@ class ChatStorage:
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         video_filename TEXT,
                         transcription TEXT,
-                        summary TEXT
+                        summary TEXT,
+                        context_data TEXT
                     )
                 """)
+                
+                # Migrate existing sessions table to add context_data if needed
+                cursor.execute("PRAGMA table_info(sessions)")
+                columns = [column[1] for column in cursor.fetchall()]
+                if 'context_data' not in columns:
+                    logger.info("Migrating sessions table to add context_data column")
+                    cursor.execute("ALTER TABLE sessions ADD COLUMN context_data TEXT")
                 
                 # Create chat_messages table
                 cursor.execute("""
@@ -69,28 +77,31 @@ class ChatStorage:
             logger.error(f"Database initialization failed: {str(e)}")
             raise
     
-    def create_session(self, video_filename: str = None) -> str:
+    def create_session(self, video_filename: str = None, session_id: str = None) -> str:
         """
         Create a new session
         
         Args:
             video_filename: Optional video filename
+            session_id: Optional session ID (if not provided, generates new UUID)
             
         Returns:
             Session ID
         """
         try:
-            session_id = str(uuid.uuid4())
+            if session_id is None:
+                session_id = str(uuid.uuid4())
             
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
+                # Use INSERT OR IGNORE to handle existing session IDs
                 cursor.execute("""
-                    INSERT INTO sessions (session_id, video_filename)
+                    INSERT OR IGNORE INTO sessions (session_id, video_filename)
                     VALUES (?, ?)
                 """, (session_id, video_filename))
                 conn.commit()
             
-            logger.info(f"Created session: {session_id}")
+            logger.info(f"Created/ensured session: {session_id}")
             return session_id
             
         except Exception as e:
@@ -115,6 +126,32 @@ class ChatStorage:
             logger.error(f"Transcription storage failed: {str(e)}")
             raise
     
+    def update_session_video(self, session_id: str, video_filename: str):
+        """Update the video filename for a session"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE sessions
+                    SET video_filename = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE session_id = ?
+                """, (video_filename, session_id))
+                if cursor.rowcount == 0:
+                    cursor.execute(
+                        """
+                        INSERT INTO sessions (session_id, video_filename)
+                        VALUES (?, ?)
+                        """,
+                        (session_id, video_filename)
+                    )
+                conn.commit()
+
+            logger.info(f"Updated video for session: {session_id}")
+
+        except Exception as e:
+            logger.error(f"Session video update failed: {str(e)}")
+            raise
+
     def store_summary(self, session_id: str, summary: str):
         """Store summary for a session"""
         try:
@@ -238,20 +275,28 @@ class ChatStorage:
                 cursor = conn.cursor()
                 cursor.execute("""
                     SELECT session_id, created_at, updated_at, video_filename, 
-                           transcription, summary
+                           transcription, summary, context_data
                     FROM sessions
                     WHERE session_id = ?
                 """, (session_id,))
                 
                 row = cursor.fetchone()
                 if row:
+                    context_data = {}
+                    if row[6]:
+                        try:
+                            context_data = json.loads(row[6])
+                        except json.JSONDecodeError:
+                            logger.warning(f"Invalid JSON in context_data for session {session_id}")
+                    
                     return {
                         'session_id': row[0],
                         'created_at': row[1],
                         'updated_at': row[2],
                         'video_filename': row[3],
                         'transcription': row[4],
-                        'summary': row[5]
+                        'summary': row[5],
+                        'context': context_data
                     }
                 
                 return None
@@ -259,6 +304,31 @@ class ChatStorage:
         except Exception as e:
             logger.error(f"Session data retrieval failed: {str(e)}")
             return None
+    
+    def update_session_context(self, session_id: str, context: Dict[str, Any]):
+        """
+        Update session context data
+        
+        Args:
+            session_id: Session identifier
+            context: Context dictionary to store
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                context_json = json.dumps(context)
+                cursor.execute("""
+                    UPDATE sessions 
+                    SET context_data = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE session_id = ?
+                """, (context_json, session_id))
+                conn.commit()
+            
+            logger.debug(f"Updated context for session: {session_id}")
+            
+        except Exception as e:
+            logger.error(f"Session context update failed: {str(e)}")
+            raise
     
     def get_all_sessions(self, limit: int = 50) -> List[Dict[str, Any]]:
         """
@@ -411,3 +481,40 @@ class ChatStorage:
                 'db_size_bytes': 0,
                 'db_size_mb': 0
             }
+    
+    def list_sessions(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """
+        List all sessions with basic info
+        
+        Args:
+            limit: Maximum number of sessions to return
+            
+        Returns:
+            List of session data dictionaries
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT session_id, video_filename, created_at, updated_at
+                    FROM sessions
+                    ORDER BY updated_at DESC
+                    LIMIT ?
+                """, (limit,))
+                
+                rows = cursor.fetchall()
+                
+                sessions = []
+                for row in rows:
+                    sessions.append({
+                        'session_id': row[0],
+                        'video_filename': row[1],
+                        'created_at': row[2],
+                        'updated_at': row[3]
+                    })
+                
+                return sessions
+                
+        except Exception as e:
+            logger.error(f"List sessions failed: {str(e)}")
+            return []

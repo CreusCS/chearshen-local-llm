@@ -17,12 +17,16 @@ logger = logging.getLogger(__name__)
 class LLMAgent:
     """Handles local LLM operations for chat and Q&A"""
     
-    def __init__(self, model_name: str = "microsoft/Phi-3-mini-4k-instruct"):
+    def __init__(self, model_name: str = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"):
         """
         Initialize the LLM agent
         
         Args:
-            model_name: Hugging Face model identifier (Phi-3 Mini, Mistral 7B, etc.)
+            model_name: Hugging Face model identifier
+                       Default: TinyLlama/TinyLlama-1.1B-Chat-v1.0 (1.1B params, ~2.2GB, optimized for chat)
+                       Other options:
+                       - "distilgpt2" (82M params, ~350MB, very fast but basic)
+                       - "microsoft/Phi-3-mini-4k-instruct" (3.8B params, much larger/slower)
         """
         self.model_name = model_name
         self.tokenizer = None
@@ -37,9 +41,12 @@ class LLMAgent:
         if self.model is None:
             logger.info(f"Loading LLM model: {self.model_name}")
             try:
-                # Configure quantization for memory efficiency
+                # For smaller models (like distilgpt2, gpt2), no quantization needed
+                # TinyLlama works well without quantization but can use it for even faster inference
+                is_large_model = "phi" in self.model_name.lower() or "mistral" in self.model_name.lower() or "llama-3" in self.model_name.lower()
+                
                 quantization_config = None
-                if self.device == "cuda":
+                if self.device == "cuda" and is_large_model:
                     quantization_config = BitsAndBytesConfig(
                         load_in_4bit=True,
                         bnb_4bit_compute_dtype=torch.float16,
@@ -50,42 +57,68 @@ class LLMAgent:
                 # Load tokenizer
                 self.tokenizer = AutoTokenizer.from_pretrained(
                     self.model_name,
-                    trust_remote_code=True
+                    trust_remote_code=is_large_model
                 )
                 
                 # Set pad token if not present
                 if self.tokenizer.pad_token is None:
                     self.tokenizer.pad_token = self.tokenizer.eos_token
                 
-                # Load model
+                # Load model with appropriate settings
+                load_kwargs = {
+                    "trust_remote_code": is_large_model,
+                }
+                
+                # Only add quantization for large models
+                if quantization_config:
+                    load_kwargs["quantization_config"] = quantization_config
+                    load_kwargs["device_map"] = "auto"
+                    load_kwargs["torch_dtype"] = torch.float16
+                elif self.device == "cuda":
+                    load_kwargs["torch_dtype"] = torch.float16
+                else:
+                    load_kwargs["torch_dtype"] = torch.float32
+                
                 self.model = AutoModelForCausalLM.from_pretrained(
                     self.model_name,
-                    quantization_config=quantization_config,
-                    device_map="auto" if self.device == "cuda" else None,
-                    trust_remote_code=True,
-                    torch_dtype=torch.float16 if self.device == "cuda" else torch.float32
+                    **load_kwargs
                 )
+                
+                # Move model to device if not using device_map
+                if "device_map" not in load_kwargs and self.device == "cuda":
+                    self.model = self.model.to(self.device)
                 
                 # Create text generation pipeline
                 self.pipeline = pipeline(
                     "text-generation",
                     model=self.model,
                     tokenizer=self.tokenizer,
-                    device_map="auto" if self.device == "cuda" else None,
-                    torch_dtype=torch.float16 if self.device == "cuda" else torch.float32
                 )
                 
-                logger.info("LLM model loaded successfully")
+                logger.info(f"LLM model loaded successfully (size: ~{self._estimate_model_size()}MB)")
                 
             except Exception as e:
                 logger.error(f"Failed to load LLM model: {str(e)}")
-                # Fallback to a smaller model if the main one fails
-                if "Phi-3" in self.model_name:
-                    logger.info("Attempting fallback to smaller model...")
-                    self.model_name = "microsoft/DialoGPT-medium"
+                # Fallback to smallest model if the main one fails
+                if self.model_name != "distilgpt2":
+                    logger.info("Attempting fallback to distilgpt2 (smallest model)...")
+                    self.model_name = "distilgpt2"
                     await self._load_model()
                 else:
                     raise
+    
+    def _estimate_model_size(self) -> int:
+        """Estimate model size in MB"""
+        if self.model is None:
+            return 0
+        try:
+            param_count = sum(p.numel() for p in self.model.parameters())
+            # Rough estimate: 4 bytes per parameter for float32, 2 for float16
+            bytes_per_param = 2 if self.device == "cuda" else 4
+            size_mb = (param_count * bytes_per_param) / (1024 * 1024)
+            return int(size_mb)
+        except:
+            return 0
     
     async def generate_response(
         self, 
@@ -138,12 +171,35 @@ class LLMAgent:
     def _build_prompt(self, message: str, context: Optional[str] = None) -> str:
         """Build formatted prompt for the LLM"""
         
-        system_prompt = """You are a helpful AI assistant specialized in video analysis and general conversation. 
+        # Use simpler prompts for smaller models (distilgpt2, gpt2)
+        is_small_model = "gpt2" in self.model_name.lower() or "distilgpt" in self.model_name.lower()
+        
+        # TinyLlama uses a specific chat format
+        is_tinyllama = "tinyllama" in self.model_name.lower()
+        
+        if is_tinyllama:
+            # TinyLlama chat format: <|system|>\n{system}<|user|>\n{user}<|assistant|>\n
+            system_prompt = "You are a helpful AI assistant specialized in video analysis and general conversation."
+            
+            if context:
+                prompt = f"<|system|>\n{system_prompt}\n\nVideo Context:\n{context[:1000]}</s>\n<|user|>\n{message}</s>\n<|assistant|>\n"
+            else:
+                prompt = f"<|system|>\n{system_prompt}</s>\n<|user|>\n{message}</s>\n<|assistant|>\n"
+        
+        elif is_small_model:
+            # Simpler format for smaller models
+            if context:
+                prompt = f"Context: {context[:500]}\n\nQuestion: {message}\n\nAnswer:"
+            else:
+                prompt = f"User: {message}\n\nAssistant:"
+        else:
+            # More structured format for larger models
+            system_prompt = """You are a helpful AI assistant specialized in video analysis and general conversation. 
 You can help with transcriptions, summaries, and answer questions about video content.
 Keep your responses clear, concise, and helpful."""
-        
-        if context:
-            prompt = f"""<|system|>
+            
+            if context:
+                prompt = f"""<|system|>
 {system_prompt}
 
 Video Context Available:
@@ -154,8 +210,8 @@ Video Context Available:
 
 <|assistant|>
 """
-        else:
-            prompt = f"""<|system|>
+            else:
+                prompt = f"""<|system|>
 {system_prompt}
 
 <|user|>
@@ -171,19 +227,23 @@ Video Context Available:
         try:
             # Tokenize input
             inputs = self.tokenizer.encode(prompt, return_tensors="pt")
-            
+            attention_mask = (inputs != self.tokenizer.pad_token_id).long()
+
             # Ensure input doesn't exceed model's max length
             if inputs.shape[1] > self.max_length - max_new_tokens:
                 inputs = inputs[:, -(self.max_length - max_new_tokens):]
-            
+                attention_mask = attention_mask[:, -(self.max_length - max_new_tokens):]
+
             # Move to device
             if self.device == "cuda":
                 inputs = inputs.to(self.device)
-            
+                attention_mask = attention_mask.to(self.device)
+
             # Generate with the model
             with torch.no_grad():
                 outputs = self.model.generate(
                     inputs,
+                    attention_mask=attention_mask,
                     max_new_tokens=max_new_tokens,
                     num_return_sequences=1,
                     temperature=0.7,
@@ -194,18 +254,18 @@ Video Context Available:
                     pad_token_id=self.tokenizer.eos_token_id,
                     eos_token_id=self.tokenizer.eos_token_id
                 )
-            
+
             # Decode response
             full_response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-            
+
             # Extract only the new part (assistant response)
             response = full_response[len(self.tokenizer.decode(inputs[0], skip_special_tokens=True)):].strip()
-            
+
             # Clean up response
             response = self._clean_response(response)
-            
+
             return response
-            
+
         except Exception as e:
             logger.error(f"Text generation failed: {str(e)}")
             raise

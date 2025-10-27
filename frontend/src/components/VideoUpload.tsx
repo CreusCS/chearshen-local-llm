@@ -1,4 +1,5 @@
-import React, { useState, useRef } from 'react';
+import React, { useState } from 'react';
+import { open } from '@tauri-apps/api/dialog';
 import { VideoAnalysisService } from '../services/grpcClient';
 import { VideoInfo } from '../types';
 
@@ -11,52 +12,52 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onVideoProcessed, sessionId }
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [videoInfo, setVideoInfo] = useState<VideoInfo | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    // Validate file type
-    if (!file.type.startsWith('video/') || !file.name.endsWith('.mp4')) {
-      alert('Please select a valid MP4 video file.');
+  const handleSelectVideo = async () => {
+    if (isUploading) {
       return;
     }
 
-    // Validate file size (max 100MB for local processing)
-    if (file.size > 100 * 1024 * 1024) {
-      alert('File size must be less than 100MB.');
-      return;
-    }
-
-    setVideoInfo({
-      filename: file.name,
-      size: file.size
+    const selected = await open({
+      title: 'Select MP4 Video',
+      multiple: false,
+      filters: [{ name: 'Video', extensions: ['mp4'] }],
     });
 
-    await processVideo(file);
-  };
+    if (!selected) {
+      return;
+    }
 
-  const processVideo = async (file: File) => {
-    setIsUploading(true);
-    setUploadProgress(0);
+    const filePath = Array.isArray(selected) ? selected[0] : selected;
+
+    if (!filePath.toLowerCase().endsWith('.mp4')) {
+      alert('Please select an MP4 video file.');
+      return;
+    }
 
     try {
-      // Read file as bytes
-      const arrayBuffer = await file.arrayBuffer();
-      const videoData = new Uint8Array(arrayBuffer);
+      const filename = filePath.split(/[\/\\]/).pop() || 'video.mp4';
+      setVideoInfo({ filename, size: 0 });
+      await processVideo(filePath, filename);
+    } catch (error) {
+      console.error('Failed to read file info:', error);
+      alert('Unable to read file information.');
+    }
+  };
 
-      setUploadProgress(30);
+  const processVideo = async (filePath: string, filename: string) => {
+    setIsUploading(true);
+    setUploadProgress(10);
 
-      // Call transcription service
+    try {
       const videoService = new VideoAnalysisService();
-      const result = await videoService.transcribeVideo(videoData, file.name);
+      const result = await videoService.transcribeVideoFromPath(filePath, sessionId);
 
       setUploadProgress(80);
 
       if (result.success) {
         setUploadProgress(100);
-        onVideoProcessed(file.name, result.transcription);
+        onVideoProcessed(filename, result.transcription);
       } else {
         throw new Error(result.errorMessage || 'Transcription failed');
       }
@@ -69,43 +70,24 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onVideoProcessed, sessionId }
     }
   };
 
-  const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    const file = event.dataTransfer.files[0];
-    if (file && fileInputRef.current) {
-      const dt = new DataTransfer();
-      dt.items.add(file);
-      fileInputRef.current.files = dt.files;
-      fileInputRef.current.dispatchEvent(new Event('change', { bubbles: true }));
-    }
-  };
-
-  const handleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
-    event.preventDefault();
-  };
-
   return (
     <div className="video-upload">
       <div
         className={`upload-zone ${isUploading ? 'uploading' : ''}`}
-        onDrop={handleDrop}
-        onDragOver={handleDragOver}
-        onClick={() => fileInputRef.current?.click()}
+        onClick={handleSelectVideo}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            handleSelectVideo();
+          }
+        }}
       >
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="video/mp4"
-          onChange={handleFileSelect}
-          style={{ display: 'none' }}
-          disabled={isUploading}
-        />
-        
         {!isUploading ? (
           <div className="upload-content">
             <div className="upload-icon">📹</div>
-            <h3>Upload Video File</h3>
-            <p>Click here or drag and drop your MP4 video file</p>
+            <h3>Select Video File</h3>
+            <p>Click to choose an MP4 video from your computer</p>
             <small>Maximum file size: 100MB</small>
           </div>
         ) : (
@@ -127,7 +109,9 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onVideoProcessed, sessionId }
         <div className="video-info">
           <h4>📄 File Information</h4>
           <p><strong>Name:</strong> {videoInfo.filename}</p>
-          <p><strong>Size:</strong> {(videoInfo.size / 1024 / 1024).toFixed(2)} MB</p>
+          {videoInfo.size > 0 && (
+            <p><strong>Size:</strong> {(videoInfo.size / 1024 / 1024).toFixed(2)} MB</p>
+          )}
         </div>
       )}
     </div>

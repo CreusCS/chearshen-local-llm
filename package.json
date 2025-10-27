@@ -7,8 +7,9 @@
     "setup": "npm run setup:backend && npm run setup:frontend",
     "setup:backend": "cd backend && python -m venv venv && pip install -r requirements.txt",
     "setup:frontend": "cd frontend && npm install",
-    "start:backend": "cd backend && python main.py",
-    "start:frontend": "cd frontend && npm run tauri dev",
+  "start:backend": "cd backend && python grpc_server.py",
+    "start:frontend": "cd frontend && npm run dev",
+    "start:tauri": "cd frontend && npm run tauri dev",
     "build": "cd frontend && npm run tauri build",
     "test": "cd backend && python -m pytest && cd ../frontend && npm test"
   },

@@ -328,6 +328,65 @@ body {
   }
 }
 
+/* Action buttons for confirmations */
+.action-buttons {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid #e2e8f0;
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.confirm-btn,
+.cancel-btn {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.confirm-btn {
+  background: #48bb78;
+  color: white;
+}
+
+.confirm-btn:hover:not(:disabled) {
+  background: #38a169;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 6px rgba(72, 187, 120, 0.3);
+}
+
+.cancel-btn {
+  background: #f56565;
+  color: white;
+}
+
+.cancel-btn:hover:not(:disabled) {
+  background: #e53e3e;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 6px rgba(245, 101, 101, 0.3);
+}
+
+.confirm-btn:disabled,
+.cancel-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.clarification-hint {
+  padding: 0.5rem 1rem;
+  background: #fffaf0;
+  border: 1px solid #fbd38d;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  color: #744210;
+}
+
 .chat-input {
   border-top: 1px solid #e2e8f0;
   padding: 1.5rem 2rem;

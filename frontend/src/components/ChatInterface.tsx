@@ -10,6 +10,7 @@ interface ChatInterfaceProps {
   currentVideo: string | null;
   currentTranscription: string | null;
   onClearHistory: () => void;
+  onNewSession: () => void;
 }
 
 const ChatInterface: React.FC<ChatInterfaceProps> = ({
@@ -18,7 +19,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
   sessionId,
   currentVideo,
   currentTranscription,
-  onClearHistory
+  onClearHistory,
+  onNewSession
 }) => {
   const [inputMessage, setInputMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -51,12 +53,13 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
     try {
       // Check for special commands
-      if (inputMessage.toLowerCase().includes('summarize') && currentTranscription) {
-        await handleSummarizeCommand(inputMessage);
-      } else if (inputMessage.toLowerCase().includes('generate pdf') && currentTranscription) {
+      if (inputMessage.toLowerCase().includes('generate pdf') && currentTranscription) {
         await handleGeneratePDFCommand(inputMessage);
       } else {
         // Regular chat
+        // Add a note about first-time loading
+        const isFirstMessage = messages.length === 0;
+        
         const result = await chatService.sendMessage(
           inputMessage,
           sessionId,
@@ -69,11 +72,17 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
             role: 'assistant',
             content: result.response,
             timestamp: Date.now(),
-            sessionId
+            sessionId,
+            actionPlan: result.actionPlan
           };
           onSendMessage(assistantMessage);
         } else {
-          throw new Error(result.errorMessage || 'Failed to get response');
+          // Provide helpful error with context
+          let errorMsg = result.errorMessage || 'Failed to get response';
+          if (isFirstMessage && errorMsg.includes('timeout')) {
+            errorMsg += '\n\nNote: The first message may take 10-30 seconds while the AI model loads. Please try again.';
+          }
+          throw new Error(errorMsg);
         }
       }
     } catch (error) {
@@ -90,43 +99,24 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     }
   };
 
-  const handleSummarizeCommand = async (message: string) => {
-    if (!currentTranscription) {
-      throw new Error('No transcription available to summarize');
-    }
-
-    const result = await videoService.summarizeTranscription(currentTranscription, sessionId);
-    
-    if (result.success) {
-      const summaryMessage: ChatMessage = {
-        id: uuidv4(),
-        role: 'assistant',
-        content: `Here's a summary of the video transcription:\n\n${result.summary}`,
-        timestamp: Date.now(),
-        sessionId
-      };
-      onSendMessage(summaryMessage);
-    } else {
-      throw new Error(result.errorMessage || 'Failed to generate summary');
-    }
+  const handleQuickReply = (reply: string) => {
+    setInputMessage(reply);
+    // Auto-send after a brief delay
+    setTimeout(() => {
+      const sendBtn = document.querySelector('.send-btn') as HTMLButtonElement;
+      if (sendBtn) sendBtn.click();
+    }, 100);
   };
 
-  const handleGeneratePDFCommand = async (message: string) => {
+  const handleGeneratePDFCommand = async (_message: string) => {
     if (!currentTranscription) {
       throw new Error('No content available to generate PDF');
     }
 
-    // First get a summary
-    const summaryResult = await videoService.summarizeTranscription(currentTranscription, sessionId);
-    
-    if (!summaryResult.success) {
-      throw new Error(summaryResult.errorMessage || 'Failed to generate summary for PDF');
-    }
-
-    // Then generate PDF
+    // Generate PDF with transcription
     const pdfResult = await videoService.generatePDF(
-      summaryResult.summary,
-      currentVideo || 'Video Summary',
+      currentTranscription,
+      currentVideo || 'Video Transcription',
       sessionId
     );
 
@@ -166,6 +156,9 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
           <button onClick={onClearHistory} className="clear-btn">
             🗑️ Clear History
           </button>
+          <button onClick={onNewSession} className="clear-btn" style={{ marginLeft: '5px' }}>
+            ✨ New Session
+          </button>
         </div>
       </div>
 
@@ -186,6 +179,12 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
               <span>"Generate PDF"</span>
               <span>"What was discussed in the video?"</span>
             </div>
+            <div className="info-note" style={{ marginTop: '20px', padding: '10px', background: '#f0f8ff', borderRadius: '5px', fontSize: '0.9em' }}>
+              ⏱️ <strong>First-time note:</strong> Your first message may take 10-30 seconds while the AI model loads. Subsequent messages will be faster (2-5 seconds)!
+            </div>
+            <div className="info-note" style={{ marginTop: '10px', padding: '10px', background: '#f0fff0', borderRadius: '5px', fontSize: '0.9em' }}>
+              💾 <strong>Persistent sessions:</strong> Your chat history is automatically saved. Close and reopen the app to see your messages restored!
+            </div>
           </div>
         ) : (
           messages.map((message) => (
@@ -200,6 +199,38 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
               <div className="message-content">
                 {message.content}
               </div>
+              
+              {/* Action confirmation buttons */}
+              {message.role === 'assistant' && message.actionPlan?.requires_user_input && (
+                <div className="action-buttons">
+                  {message.actionPlan.status === 'requires_confirmation' && (
+                    <>
+                      <button 
+                        className="confirm-btn"
+                        onClick={() => handleQuickReply('Yes, proceed')}
+                        disabled={isLoading}
+                      >
+                        ✓ Yes, Proceed
+                      </button>
+                      <button 
+                        className="cancel-btn"
+                        onClick={() => handleQuickReply('No, cancel')}
+                        disabled={isLoading}
+                      >
+                        ✗ Cancel
+                      </button>
+                    </>
+                  )}
+                  
+                  {message.actionPlan.status === 'needs_clarification' && 
+                   message.actionPlan.missing_params && 
+                   message.actionPlan.missing_params.length > 0 && (
+                    <div className="clarification-hint">
+                      💡 Needs: {message.actionPlan.missing_params.join(', ')}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           ))
         )}
@@ -215,6 +246,11 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 <span>●</span>
                 <span>●</span>
               </div>
+              {messages.length === 1 && (
+                <div style={{ marginTop: '10px', fontSize: '0.85em', color: '#666' }}>
+                  First message may take 10-30 seconds while loading AI model...
+                </div>
+              )}
             </div>
           </div>
         )}

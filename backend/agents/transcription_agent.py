@@ -6,7 +6,7 @@ from typing import Dict, Any
 import torch
 import torchaudio
 from transformers import WhisperProcessor, WhisperForConditionalGeneration
-from moviepy.editor import VideoFileClip
+from moviepy import VideoFileClip
 import tempfile
 
 logger = logging.getLogger(__name__)
