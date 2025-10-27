@@ -5,7 +5,6 @@ mod grpc_client;
 
 use std::path::Path;
 
-use async_stream::stream;
 use grpc_client::proto;
 use grpc_client::GrpcState;
 use serde::Serialize;
@@ -13,6 +12,8 @@ use serde_json::Value;
 use tauri::State;
 use tokio::fs;
 use tokio::io::{AsyncReadExt, BufReader};
+use tokio_stream::iter;
+use tonic::Request;
 
 const MAX_VIDEO_BYTES: u64 = 100 * 1024 * 1024;
 const CHUNK_SIZE: usize = 512 * 1024;
@@ -127,31 +128,33 @@ async fn transcribe_video(
   let session_id_for_chunks = session_id.clone();
   let filename_for_chunks = filename.clone();
 
-  let outbound = stream! {
-    loop {
-      let mut buffer = vec![0u8; CHUNK_SIZE];
-      match reader.read(&mut buffer).await {
-        Ok(0) => break,
-        Ok(bytes_read) => {
-          buffer.truncate(bytes_read);
-          yield Ok(proto::VideoUploadChunk {
-            data: buffer,
-            filename: filename_for_chunks.clone(),
-            session_id: session_id_for_chunks.clone(),
-          });
-        }
-        Err(err) => {
-          yield Err(tonic::Status::internal(err.to_string()));
-          break;
-        }
-      }
+  let mut chunks = Vec::new();
+
+  loop {
+    let mut buffer = vec![0u8; CHUNK_SIZE];
+    let bytes_read = reader
+      .read(&mut buffer)
+      .await
+      .map_err(|err| format!("Failed to read video file: {err}"))?;
+
+    if bytes_read == 0 {
+      break;
     }
-  };
+
+    buffer.truncate(bytes_read);
+    chunks.push(proto::VideoUploadChunk {
+      data: buffer,
+      filename: filename_for_chunks.clone(),
+      session_id: session_id_for_chunks.clone(),
+    });
+  }
+
+  let outbound = iter(chunks);
 
   let mut locked_client = client.lock().await;
 
   let response = locked_client
-    .transcribe_video(outbound)
+    .transcribe_video(Request::new(outbound))
     .await
     .map_err(|err| format!("Transcription request failed: {err}"))?
     .into_inner();

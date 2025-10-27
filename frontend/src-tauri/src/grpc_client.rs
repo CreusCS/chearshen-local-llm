@@ -27,11 +27,13 @@ impl GrpcState {
         let endpoint = self.endpoint.clone();
         let client = self
             .client
-            .get_or_try_init(|| async {
+            .get_or_try_init(|| async move {
                 let channel = Endpoint::from_shared(endpoint.clone())?
                     .connect()
                     .await?;
-                Ok(Arc::new(Mutex::new(VideoAnalyzerClient::new(channel))))
+                let wrapped: Arc<Mutex<VideoAnalyzerClient<Channel>>> =
+                    Arc::new(Mutex::new(VideoAnalyzerClient::new(channel)));
+                Ok::<Arc<Mutex<VideoAnalyzerClient<Channel>>>, anyhow::Error>(wrapped)
             })
             .await?;
 
