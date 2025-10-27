@@ -1,0 +1,42 @@
+{
+  "name": "ai-video-analyzer",
+  "version": "1.0.0",
+  "description": "A fully local AI desktop application for video analysis with transcription, summarization, and chat capabilities",
+  "main": "index.js",
+  "scripts": {
+    "setup": "npm run setup:backend && npm run setup:frontend",
+    "setup:backend": "cd backend && python -m venv venv && pip install -r requirements.txt",
+    "setup:frontend": "cd frontend && npm install",
+    "start:backend": "cd backend && python main.py",
+    "start:frontend": "cd frontend && npm run tauri dev",
+    "build": "cd frontend && npm run tauri build",
+    "test": "cd backend && python -m pytest && cd ../frontend && npm test"
+  },
+  "keywords": [
+    "ai",
+    "video-analysis",
+    "transcription",
+    "summarization",
+    "local-ai",
+    "tauri",
+    "react",
+    "python",
+    "huggingface",
+    "whisper",
+    "offline"
+  ],
+  "author": "AI Video Analyzer Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-username/ai-video-analyzer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/your-username/ai-video-analyzer/issues"
+  },
+  "homepage": "https://github.com/your-username/ai-video-analyzer#readme",
+  "engines": {
+    "node": ">=18.0.0",
+    "python": ">=3.9.0"
+  }
+}

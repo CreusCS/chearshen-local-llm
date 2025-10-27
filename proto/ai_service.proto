@@ -1,0 +1,95 @@
+syntax = "proto3";
+
+package ai_service;
+
+// Video analysis service
+service VideoAnalysisService {
+  rpc TranscribeVideo(VideoRequest) returns (TranscriptionResponse);
+  rpc SummarizeTranscription(SummarizationRequest) returns (SummarizationResponse);
+  rpc GeneratePDF(PDFRequest) returns (PDFResponse);
+}
+
+// LLM chat service
+service LLMChatService {
+  rpc Chat(ChatRequest) returns (ChatResponse);
+  rpc GetChatHistory(HistoryRequest) returns (HistoryResponse);
+  rpc ClearHistory(ClearHistoryRequest) returns (ClearHistoryResponse);
+}
+
+// Video-related messages
+message VideoRequest {
+  bytes video_data = 1;
+  string filename = 2;
+}
+
+message TranscriptionResponse {
+  string transcription = 1;
+  bool success = 2;
+  string error_message = 3;
+  string session_id = 4;
+}
+
+message SummarizationRequest {
+  string transcription = 1;
+  string session_id = 2;
+}
+
+message SummarizationResponse {
+  string summary = 1;
+  bool success = 2;
+  string error_message = 3;
+}
+
+message PDFRequest {
+  string content = 1;
+  string title = 2;
+  string session_id = 3;
+}
+
+message PDFResponse {
+  bytes pdf_data = 1;
+  bool success = 2;
+  string error_message = 3;
+  string filename = 4;
+}
+
+// Chat-related messages
+message ChatRequest {
+  string message = 1;
+  string session_id = 2;
+  string context = 3; // Optional context from previous operations
+}
+
+message ChatResponse {
+  string response = 1;
+  bool success = 2;
+  string error_message = 3;
+  string session_id = 4;
+}
+
+message ChatMessage {
+  string role = 1; // "user" or "assistant"
+  string content = 2;
+  int64 timestamp = 3;
+  string session_id = 4;
+}
+
+message HistoryRequest {
+  string session_id = 1;
+  int32 limit = 2; // Optional: limit number of messages
+}
+
+message HistoryResponse {
+  repeated ChatMessage messages = 1;
+  bool success = 2;
+  string error_message = 3;
+}
+
+message ClearHistoryRequest {
+  string session_id = 1;
+}
+
+message ClearHistoryResponse {
+  bool success = 1;
+  string error_message = 2;
+}

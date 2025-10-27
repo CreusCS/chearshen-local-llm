@@ -1,0 +1,34 @@
+# Backend requirements for AI Video Analyzer
+
+# Core dependencies
+grpcio
+grpcio-tools
+grpcio-reflection
+protobuf
+
+# Machine Learning libraries
+torch
+torchaudio
+transformers
+accelerate
+bitsandbytes
+
+# Video processing
+moviepy
+opencv-python
+
+# Audio processing (additional dependencies for Whisper)
+librosa
+soundfile
+
+# PDF generation
+reportlab  
+
+# Utility libraries
+#numpy
+#Pillow 
+
+# Development and testing
+#pytest
+#black
+#flake8
