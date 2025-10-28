@@ -11,17 +11,12 @@ from importlib import import_module
 from importlib import resources
 from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING, Optional
+from typing import Optional
 
 import grpc
 from google.protobuf import empty_pb2
 
-from agents.action_planner import ActionPlanner
-from agents.llm_agent import LLMAgent
-from agents.transcription_agent import TranscriptionAgent
-from services.chat_orchestrator import ChatOrchestrator
-from utils.pdf_generator import PDFGenerator
-from utils.storage import ChatStorage
+from mcp_server import MCPApplication, get_mcp_app
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -87,15 +82,12 @@ def ensure_proto_compiled() -> tuple[ModuleType, ModuleType]:
 
 video_pb2, video_pb2_grpc = ensure_proto_compiled()
 
-if TYPE_CHECKING:  # pragma: no cover - import only for type checkers
-    from generated import video_analyzer_pb2 as video_analyzer_types
-
 
 class VideoAnalyzerService(video_pb2_grpc.VideoAnalyzerServicer):
-    """Implementation of the VideoAnalyzer gRPC service."""
+    """Implementation of the VideoAnalyzer gRPC service backed by MCP."""
 
-    def __init__(self, orchestrator: ChatOrchestrator) -> None:
-        self.orchestrator = orchestrator
+    def __init__(self, app: MCPApplication) -> None:
+        self._app = app
 
     async def TranscribeVideo(  # noqa: N802 - gRPC naming
         self,
@@ -117,7 +109,7 @@ class VideoAnalyzerService(video_pb2_grpc.VideoAnalyzerServicer):
         if not filename:
             filename = "upload.mp4"
 
-        result = await self.orchestrator.transcribe_video(bytes(buffer), filename, session_id)
+        result = await self._app.transcribe_video(bytes(buffer), filename, session_id)
 
         return video_pb2.TranscriptionResponse(
             success=result.get('success', False),
@@ -132,7 +124,7 @@ class VideoAnalyzerService(video_pb2_grpc.VideoAnalyzerServicer):
         request,
         context: grpc.aio.ServicerContext,
     ):
-        result = await self.orchestrator.process_chat(
+        result = await self._app.process_chat(
             session_id=request.session_id,
             message=request.message,
             context=request.context or None,
@@ -162,7 +154,7 @@ class VideoAnalyzerService(video_pb2_grpc.VideoAnalyzerServicer):
         request,
         context: grpc.aio.ServicerContext,
     ):
-        history = self.orchestrator.get_chat_history(request.session_id, request.limit or 50)
+        history = self._app.get_chat_history(request.session_id, request.limit or 50)
         messages = []
         for message in history.get('messages', []):
             messages.append(
@@ -180,7 +172,7 @@ class VideoAnalyzerService(video_pb2_grpc.VideoAnalyzerServicer):
         request,
         context: grpc.aio.ServicerContext,
     ) -> empty_pb2.Empty:
-        self.orchestrator.clear_chat_history(request.session_id)
+        self._app.clear_chat_history(request.session_id)
         return empty_pb2.Empty()
 
     async def GeneratePdf(  # noqa: N802
@@ -188,10 +180,10 @@ class VideoAnalyzerService(video_pb2_grpc.VideoAnalyzerServicer):
         request,
         context: grpc.aio.ServicerContext,
     ):
-        result = self.orchestrator.generate_pdf_bytes(
-            content=request.content,
-            title=request.title,
+        result = await self._app.generate_pdf(
             session_id=request.session_id,
+            title=request.title,
+            content=request.content,
         )
         return video_pb2.GeneratePdfResponse(
             success=result.get('success', False),
@@ -205,7 +197,7 @@ class VideoAnalyzerService(video_pb2_grpc.VideoAnalyzerServicer):
         request,
         context: grpc.aio.ServicerContext,
     ):
-        context_payload = self.orchestrator.get_session_context(request.session_id)
+        context_payload = self._app.get_session_context(request.session_id)
         session = context_payload.get('session') or {}
         return video_pb2.SessionContextResponse(
             success=context_payload.get('success', False),
@@ -234,13 +226,7 @@ class VideoAnalyzerService(video_pb2_grpc.VideoAnalyzerServicer):
 
 
 async def serve(host: str = "0.0.0.0", port: int = 50051) -> None:
-    orchestrator = ChatOrchestrator(
-        transcription_agent=TranscriptionAgent(),
-        llm_agent=LLMAgent(),
-        action_planner=ActionPlanner(),
-        storage=ChatStorage(),
-        pdf_generator=PDFGenerator(),
-    )
+    mcp_app = get_mcp_app()
 
     server = grpc.aio.server(
         options=[
@@ -250,7 +236,7 @@ async def serve(host: str = "0.0.0.0", port: int = 50051) -> None:
     )
 
     video_pb2_grpc.add_VideoAnalyzerServicer_to_server(
-        VideoAnalyzerService(orchestrator),
+        VideoAnalyzerService(mcp_app),
         server,
     )
 

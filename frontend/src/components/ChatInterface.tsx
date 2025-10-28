@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { ChatMessage } from '../types';
-import { LLMChatService, VideoAnalysisService } from '../services/grpcClient';
+import { LLMChatService } from '../services/grpcClient';
 import { v4 as uuidv4 } from 'uuid';
 
 interface ChatInterfaceProps {
@@ -26,7 +26,6 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatService = new LLMChatService();
-  const videoService = new VideoAnalysisService();
 
   useEffect(() => {
     scrollToBottom();
@@ -52,38 +51,30 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     setIsLoading(true);
 
     try {
-      // Check for special commands
-      if (inputMessage.toLowerCase().includes('generate pdf') && currentTranscription) {
-        await handleGeneratePDFCommand(inputMessage);
-      } else {
-        // Regular chat
-        // Add a note about first-time loading
-        const isFirstMessage = messages.length === 0;
-        
-        const result = await chatService.sendMessage(
-          inputMessage,
-          sessionId,
-          currentTranscription || undefined
-        );
+      const isFirstMessage = messages.length === 0;
 
-        if (result.success) {
-          const assistantMessage: ChatMessage = {
-            id: uuidv4(),
-            role: 'assistant',
-            content: result.response,
-            timestamp: Date.now(),
-            sessionId,
-            actionPlan: result.actionPlan
-          };
-          onSendMessage(assistantMessage);
-        } else {
-          // Provide helpful error with context
-          let errorMsg = result.errorMessage || 'Failed to get response';
-          if (isFirstMessage && errorMsg.includes('timeout')) {
-            errorMsg += '\n\nNote: The first message may take 10-30 seconds while the AI model loads. Please try again.';
-          }
-          throw new Error(errorMsg);
+      const result = await chatService.sendMessage(
+        inputMessage,
+        sessionId,
+        currentTranscription || undefined
+      );
+
+      if (result.success) {
+        const assistantMessage: ChatMessage = {
+          id: uuidv4(),
+          role: 'assistant',
+          content: result.response,
+          timestamp: Date.now(),
+          sessionId,
+          actionPlan: result.actionPlan
+        };
+        onSendMessage(assistantMessage);
+      } else {
+        let errorMsg = result.errorMessage || 'Failed to get response';
+        if (isFirstMessage && errorMsg.includes('timeout')) {
+          errorMsg += '\n\nNote: The first message may take 10-30 seconds while the AI model loads. Please try again.';
         }
+        throw new Error(errorMsg);
       }
     } catch (error) {
       const errorMessage: ChatMessage = {
@@ -106,32 +97,6 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
       const sendBtn = document.querySelector('.send-btn') as HTMLButtonElement;
       if (sendBtn) sendBtn.click();
     }, 100);
-  };
-
-  const handleGeneratePDFCommand = async (_message: string) => {
-    if (!currentTranscription) {
-      throw new Error('No content available to generate PDF');
-    }
-
-    // Generate PDF with transcription
-    const pdfResult = await videoService.generatePDF(
-      currentTranscription,
-      currentVideo || 'Video Transcription',
-      sessionId
-    );
-
-    if (pdfResult.success) {
-      const pdfMessage: ChatMessage = {
-        id: uuidv4(),
-        role: 'assistant',
-        content: `PDF generated successfully! The document "${pdfResult.filename}" has been created with the video summary.`,
-        timestamp: Date.now(),
-        sessionId
-      };
-      onSendMessage(pdfMessage);
-    } else {
-      throw new Error(pdfResult.errorMessage || 'Failed to generate PDF');
-    }
   };
 
   const handleKeyPress = (event: React.KeyboardEvent) => {
@@ -278,22 +243,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
         </div>
         
         {currentVideo && (
-          <div className="quick-actions">
-            <button 
-              onClick={() => setInputMessage('Summarize the video')}
-              disabled={isLoading}
-              className="quick-btn"
-            >
-              📝 Summarize
-            </button>
-            <button 
-              onClick={() => setInputMessage('Generate PDF')}
-              disabled={isLoading}
-              className="quick-btn"
-            >
-              📄 Generate PDF
-            </button>
-          </div>
+          <div className="quick-actions" />
         )}
       </div>
     </div>

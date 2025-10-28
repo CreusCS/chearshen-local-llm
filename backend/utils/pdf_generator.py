@@ -316,3 +316,23 @@ class PDFGenerator:
         except Exception as e:
             logger.error(f"Summary PDF generation failed: {str(e)}")
             raise
+
+    # Backward-compatible alias used by existing orchestrator code
+    def generate_pdf(self, *, content: str, title: str, session_id: str) -> str:
+        """Generate a PDF file on disk and return its path (legacy interface)."""
+        logger.info("generate_pdf called via legacy interface; delegating to create_pdf")
+        pdf_bytes = self.create_pdf(content=content, title=title)
+        filename = f"{title.replace(' ', '_')}.pdf"
+        return self.save_to_disk(pdf_bytes, filename)
+
+    def save_to_disk(self, pdf_data: bytes, filename: str) -> str:
+        """Persist PDF bytes under a session-aware path."""
+        from pathlib import Path
+
+        output_dir = Path("generated_pdfs")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / filename
+        with output_path.open('wb') as handle:
+            handle.write(pdf_data)
+        logger.info("PDF saved to %s", output_path)
+        return str(output_path)

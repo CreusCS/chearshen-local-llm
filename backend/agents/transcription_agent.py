@@ -26,6 +26,7 @@ class TranscriptionAgent:
         self.model_name = model_name
         self.processor = None
         self.model = None
+        self.forced_decoder_ids = None
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         logger.info(f"TranscriptionAgent initialized with device: {self.device}")
     
@@ -37,6 +38,10 @@ class TranscriptionAgent:
                 self.processor = WhisperProcessor.from_pretrained(self.model_name)
                 self.model = WhisperForConditionalGeneration.from_pretrained(self.model_name)
                 self.model.to(self.device)
+                self.forced_decoder_ids = self.processor.get_decoder_prompt_ids(
+                    language="en",
+                    task="transcribe",
+                )
                 logger.info("Whisper model loaded successfully")
             except Exception as e:
                 logger.error(f"Failed to load Whisper model: {str(e)}")
@@ -168,7 +173,8 @@ class TranscriptionAgent:
                     max_length=448,
                     num_beams=5,
                     temperature=0.0,
-                    do_sample=False
+                    do_sample=False,
+                    forced_decoder_ids=self.forced_decoder_ids,
                 )
             
             # Decode the transcription

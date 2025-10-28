@@ -5,7 +5,7 @@ Detects user intent, plans actions, and requests clarification when needed
 
 import logging
 import re
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from enum import Enum
 
 logger = logging.getLogger(__name__)
@@ -84,8 +84,13 @@ class ActionPlanner:
                 r"(?:please\s+)?(?:tell|explain)",
             ]
         }
+        self.action_thresholds = {
+            ActionType.TRANSCRIBE_VIDEO: 0.55,
+            ActionType.GENERATE_PDF: 0.55,
+            ActionType.ANSWER_QUESTION: 0.0,
+        }
     
-    def detect_action_type(self, message: str) -> ActionType:
+    def detect_action_type(self, message: str) -> Tuple[ActionType, float]:
         """
         Detect the type of action from user message
         
@@ -97,14 +102,32 @@ class ActionPlanner:
         """
         message_lower = message.lower().strip()
         
+        best_action = ActionType.ANSWER_QUESTION
+        best_score = 0.0
+
         for action_type, patterns in self.action_patterns.items():
+            matches: List[re.Match] = []
+            unique_patterns = set()
             for pattern in patterns:
-                if re.search(pattern, message_lower):
-                    logger.info(f"Detected action type: {action_type.value}")
-                    return action_type
-        
-        logger.info("No specific action detected, treating as general question")
-        return ActionType.ANSWER_QUESTION
+                pattern_matches = list(re.finditer(pattern, message_lower))
+                if pattern_matches:
+                    matches.extend(pattern_matches)
+                    unique_patterns.add(pattern)
+
+            if matches:
+                coverage = sum(len(match.group(0)) for match in matches) / max(len(message_lower), 1)
+                diversity = len(unique_patterns) / len(patterns)
+                score = min(1.0, 0.35 + 0.45 * coverage + 0.2 * diversity)
+                logger.debug("Action %s scored %.2f", action_type.value, score)
+                if score > best_score:
+                    best_score = score
+                    best_action = action_type
+
+        if best_action == ActionType.ANSWER_QUESTION and message_lower.endswith("?"):
+            best_score = max(best_score, 0.6)
+
+        logger.info("Detected action type %s with confidence %.2f", best_action.value, best_score)
+        return best_action, best_score
     
     def plan_action(
         self, 
@@ -121,7 +144,23 @@ class ActionPlanner:
         Returns:
             ActionPlan with status and required parameters
         """
-        action_type = self.detect_action_type(message)
+        action_type, confidence = self.detect_action_type(message)
+
+        if action_type != ActionType.ANSWER_QUESTION:
+            threshold = self.action_thresholds.get(action_type, 0.5)
+            if confidence < threshold:
+                return ActionPlan(
+                    action_type=ActionType.UNKNOWN,
+                    status=ActionStatus.NEEDS_CLARIFICATION,
+                    parameters={
+                        'candidate_action': action_type.value,
+                        'original_message': message,
+                        'context_snapshot': self._context_snapshot(context),
+                        'confidence': confidence,
+                    },
+                    missing_params=['intent'],
+                    clarification_question=self._build_disambiguation_prompt(action_type),
+                )
         
         if action_type == ActionType.TRANSCRIBE_VIDEO:
             return self._plan_transcription(message, context)
@@ -178,6 +217,11 @@ class ActionPlanner:
             return ActionPlan(
                 action_type=ActionType.GENERATE_PDF,
                 status=ActionStatus.NEEDS_CLARIFICATION,
+                parameters={
+                    'content_source': None,
+                    'title': None,
+                },
+                missing_params=['content_source'],
                 clarification_question=(
                     "I need content to create a PDF. What would you like to include?\n"
                     "1. Upload and transcribe a video first, or\n"
@@ -291,6 +335,29 @@ class ActionPlanner:
             params['content'] = 'transcription'
         
         return params
+
+    def _context_snapshot(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        keys_to_keep = [
+            'has_video',
+            'video_filename',
+            'has_transcription',
+            'has_summary',
+            'transcription',
+            'summary',
+        ]
+        return {key: context.get(key) for key in keys_to_keep if key in context}
+
+    def _build_disambiguation_prompt(self, action_type: ActionType) -> str:
+        descriptions = {
+            ActionType.TRANSCRIBE_VIDEO: "transcribe your video",
+            ActionType.GENERATE_PDF: "generate a PDF report",
+            ActionType.ANSWER_QUESTION: "answer a question about your content",
+        }
+        verb = descriptions.get(action_type, "help out")
+        return (
+            f"It sounds like you might want me to {verb}, but I'm not completely sure. "
+            "Would you like me to do that, or is there something else you had in mind?"
+        )
     
     def process_clarification_response(
         self,
@@ -328,6 +395,7 @@ class ActionPlanner:
                 # User cancelled
                 original_plan.status = ActionStatus.FAILED
                 original_plan.clarification_question = "Action cancelled. What else can I help you with?"
+                original_plan.parameters.pop('pending_confirmation', None)
                 return original_plan
         
         elif original_plan.status == ActionStatus.NEEDS_CLARIFICATION:
@@ -343,10 +411,71 @@ class ActionPlanner:
             
             # For PDF generation - collect missing parameters
             elif original_plan.action_type == ActionType.GENERATE_PDF:
+                if original_plan.missing_params and 'content_source' in original_plan.missing_params:
+                    choice_text = response_lower.strip()
+                    if choice_text.startswith('1') or 'upload' in choice_text:
+                        original_plan.status = ActionStatus.FAILED
+                        original_plan.missing_params.clear()
+                        original_plan.clarification_question = (
+                            "No problem. Please upload and transcribe a video first, then ask me to generate the PDF again."
+                        )
+                        return original_plan
+                    if choice_text.startswith('2') or 'summary' in choice_text:
+                        original_plan.status = ActionStatus.FAILED
+                        original_plan.missing_params.clear()
+                        original_plan.clarification_question = (
+                            "Happy to help once we have a summary. Ask me to summarize your transcription or provide the text you'd like summarized, then we can make a PDF."
+                        )
+                        return original_plan
+                    if choice_text.startswith('3') or 'text' in choice_text or 'provide' in choice_text:
+                        original_plan.parameters['content_source'] = 'custom_text'
+                        original_plan.missing_params = ['content_text']
+                        original_plan.clarification_question = "Great! Please paste the text you'd like included in the PDF."
+                        return original_plan
+
+                    original_plan.clarification_question = (
+                        "I didn't catch that. Please respond with 1, 2, or 3 so I know which option you prefer."
+                    )
+                    return original_plan
+
+                if original_plan.parameters.get('content_source') == 'custom_text' and original_plan.missing_params and 'content_text' in original_plan.missing_params:
+                    if negative:
+                        original_plan.status = ActionStatus.FAILED
+                        original_plan.missing_params.clear()
+                        original_plan.clarification_question = "Okay, I'll wait. Let me know when you have the text ready."
+                        return original_plan
+
+                    original_plan.parameters['override_content'] = user_response.strip()
+                    original_plan.missing_params.remove('content_text')
+
+                    if not original_plan.parameters.get('title'):
+                        if 'title' not in original_plan.missing_params:
+                            original_plan.missing_params.append('title')
+                        original_plan.clarification_question = "What title should I use for the PDF?"
+                        return original_plan
+
+                    original_plan.status = ActionStatus.REQUIRES_CONFIRMATION
+                    original_plan.parameters['content'] = 'custom_text'
+                    original_plan.confirmation_message = (
+                        f"I'll generate a PDF titled '{original_plan.parameters['title']}' with the text you provided. Proceed?"
+                    )
+                    original_plan.parameters['pending_confirmation'] = True
+                    original_plan.clarification_question = None
+                    return original_plan
+
                 # Likely a title response
                 if original_plan.missing_params and 'title' in original_plan.missing_params:
+                    if negative:
+                        original_plan.status = ActionStatus.FAILED
+                        original_plan.clarification_question = "Okay, I'll hold off on generating a PDF. Let me know when you're ready."
+                        original_plan.missing_params.clear()
+                        return original_plan
+
                     original_plan.parameters['title'] = user_response.strip('"\'')
                     original_plan.missing_params.remove('title')
+
+                    if original_plan.parameters.get('content_source') == 'custom_text' and not original_plan.parameters.get('override_content'):
+                        original_plan.parameters['content'] = 'custom_text'
                     
                     if not original_plan.missing_params:
                         # All parameters collected, ask for confirmation
@@ -355,8 +484,34 @@ class ActionPlanner:
                             f"I'll generate a PDF titled '{original_plan.parameters['title']}'. "
                             f"Proceed?"
                         )
+                        original_plan.parameters['pending_confirmation'] = True
+                        original_plan.clarification_question = None
                     
                     return original_plan
+
+            elif original_plan.action_type == ActionType.UNKNOWN:
+                candidate_value = original_plan.parameters.get('candidate_action')
+                context_snapshot = original_plan.parameters.get('context_snapshot') or {}
+                original_message = original_plan.parameters.get('original_message', user_response)
+
+                if candidate_value:
+                    candidate_action = ActionType(candidate_value)
+
+                    if affirmative:
+                        if candidate_action == ActionType.TRANSCRIBE_VIDEO:
+                            return self._plan_transcription(original_message, context_snapshot)
+                        if candidate_action == ActionType.GENERATE_PDF:
+                            return self._plan_pdf_generation(original_message, context_snapshot)
+                        if candidate_action == ActionType.ANSWER_QUESTION:
+                            return self._plan_question_answer(original_message, context_snapshot)
+
+                    if negative:
+                        original_plan.status = ActionStatus.FAILED
+                        original_plan.clarification_question = "No problem. What would you like me to help with instead?"
+                        return original_plan
+
+                # Treat the response as a new instruction and re-plan with available context
+                return self.plan_action(user_response, context_snapshot)
         
         # Default: keep original plan
         return original_plan

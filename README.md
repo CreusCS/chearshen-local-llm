@@ -6,31 +6,45 @@ A fully local AI desktop application that analyzes short MP4 videos (≈1 min), 
 
 ```
 +---------------------------------------------------+
-|                   Desktop (React + Tauri)         |
+|               Desktop (React + Tauri)             |
 |---------------------------------------------------|
 | React UI (TS)                                     |
 |   ↳ Chat-first workflow, local persistence        |
 |                                                   |
-| Tauri Rust Layer                                 |
+| Tauri Rust Layer                                  |
 |   ↳ gRPC client (tonic)                           |
 |   ↳ Commands exposed to React via invoke()        |
 +-------------------------|-------------------------+
-                          |
-                          v  (gRPC localhost:50051)
-+---------------------------------------------------+
-|                   Local Backend (Python)          |
+                          | gRPC (localhost:50051)
+                          v
++-------------------------|-------------------------+
+|              gRPC Transport Layer                 |
 |---------------------------------------------------|
-| gRPC Server (grpcio, asyncio)                     |
-|   ↳ MCP wrapper remains available                 |
-|                                                   |
-| Tools / Agents:                                   |
+| Python gRPC server (grpcio, asyncio)              |
+|   ↳ Streams uploads & chat over gRPC              |
+|   ↳ Delegates requests to MCP application core    |
++-------------------------|-------------------------+
+                          |
+                          v
++---------------------------------------------------+
+|         MCP Application & Shared Tooling         |
+|---------------------------------------------------|
+| Model Context Protocol server (stdio)             |
+| ChatOrchestrator core (agents + storage)          |
+| Agents / tools:                                   |
 |   • Transcription (Whisper)                       |
 |   • LLM Chat (TinyLlama)                          |
-|   • Action Planner                                |
-|                                                   |
-| Context + Storage                                 |
-|   ↳ SQLite chat memory                            |
-|   ↳ Human-in-loop routing                         |
+|   • Hybrid Action Planner                         |
+| Support services:                                 |
+|   ↳ PDF generator (ReportLab)                     |
+|   ↳ SQLite storage                                |
++---------------------------------------------------+
+                          ^
+                          | stdio
++-------------------------|-------------------------+
+|        External MCP Clients (optional)            |
+|---------------------------------------------------|
+| Claude Desktop, VS Code MCP, etc.                 |
 +---------------------------------------------------+
 ```
 
@@ -44,10 +58,10 @@ A fully local AI desktop application that analyzes short MP4 videos (≈1 min), 
 
 **Backend (Python)**
 - **gRPC Server**: Primary interface for the desktop client
-- **MCP Server**: stdio-based protocol for Claude Desktop
+- **MCP Bridge**: Shared orchestrator layer reused by gRPC and external MCP clients
 - **Transcription Agent**: Whisper model for speech-to-text
-- **LLM Agent**: TinyLlama-1.1B for chat and Q&A
-- **Action Planner**: Intent detection and human-in-loop clarification
+- **LLM Agent**: TinyLlama-1.1B for chat, Q&A, and structured tool planning
+- **Action Planner**: LLM-guided tool planner with deterministic fallback and built-in clarifications
 - **PDF Generator**: ReportLab for document creation
 - **Storage System**: SQLite for persistent data
 
@@ -96,7 +110,7 @@ A fully local AI desktop application that analyzes short MP4 videos (≈1 min), 
   npm run tauri dev
   ```
 
-Use `start.bat` on Windows for a guided menu (option 1 launches the gRPC backend, option 2 launches the MCP server).
+Use `start_backend.bat` to launch the Python service and `start_frontend.bat` for the desktop shell if you ran `setup.bat`.
 
 ## 📖 Usage Guide
 
@@ -104,8 +118,8 @@ Use `start.bat` on Windows for a guided menu (option 1 launches the gRPC backend
 
 1. **Upload Video**: Drag and drop an MP4 file or click the upload area
 2. **Wait for Processing**: The app will automatically transcribe the video
-3. **Chat with AI**: Ask questions about the content or request summaries
-4. **Generate Reports**: Create PDF documents from summaries
+3. **Chat with AI**: Ask questions, trigger transcription, or request PDFs via natural language
+4. **Generate Reports**: Create PDF documents from summaries, transcriptions, or custom text via LLM-guided plans
 
 ## 🔧 Configuration
 
@@ -114,58 +128,9 @@ Use `start.bat` on Windows for a guided menu (option 1 launches the gRPC backend
 The application uses these default models (automatically downloaded on first use):
 
 - **Transcription**: `openai/whisper-small`
-- **Summarization**: `facebook/bart-large-cnn`
 - **LLM**: `TinyLlama/TinyLlama-1.1B-Chat-v1.0` 
 
-### Memory Requirements
-
-- **Minimum**: 8GB RAM (CPU only)
-- **Recommended**: 16GB RAM
-- **Storage**: ~10GB for models and data
-
-
-## 🚧 Known Limitations
-
-- **Video Format**: Only MP4 files supported
-- **File Size**: 100MB maximum for optimal performance
-- **Languages**: Primary support for English (Whisper supports 99 languages)
-- **GPU Memory**: Large models may require GPU with sufficient VRAM
-
-## 🔮 Future Enhancements
-
-- [ ] Support for additional video formats (AVI, MOV, MKV)
-- [ ] Batch processing of multiple videos
-- [ ] Advanced search functionality in chat history
-- [ ] Custom model fine-tuning interface
-- [ ] Advanced PDF templates and styling
-- [ ] Audio-only processing support
-
-### Getting Help
-
-1. **Check Documentation**:
-   - `QUICKSTART.md` - Fast setup guide
-   - `REQUIREMENTS_STATUS.md` - Feature implementation details
-   - `HUMAN_IN_LOOP_GUIDE.md` - Clarification system documentation
-   - `TESTING_GUIDE.md` - Manual testing procedures
-
-2. **Verify Installation**:
-   - Start the backend and ensure it logs `Starting gRPC server`
-   - Watch the backend terminal for model-loading status or stack traces
-   - Confirm the frontend Tauri console shows successful command invokes
-
-3. **Common Fixes**:
-   - Restart backend server
-   - Clear browser localStorage
-   - Delete `chat_data.db` and restart (WARNING: loses history)
-   - Reinstall Python dependencies: `pip install -r backend/requirements.txt`
-
-
-## 🙏 Acknowledgments
-
-- **Hugging Face** for hosting the TinyLlama and Whisper models
-- **OpenAI** for Whisper speech recognition
-- **TinyLlama Project** for the lightweight chat model
-- **Tauri** for the cross-platform desktop framework
+Transcription is always forced to English by the backend to keep recognition consistent across requests.
 
 ---
 

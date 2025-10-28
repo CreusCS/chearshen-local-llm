@@ -58,6 +58,19 @@ REM Install Python dependencies
 echo Installing Python dependencies...
 python -m pip install --upgrade pip
 pip install -r requirements.txt
+if %errorlevel% neq 0 (
+    echo ❌ Failed to install backend dependencies.
+    pause
+    exit /b 1
+)
+
+echo Pre-downloading model weights for offline usage...
+python preload_models.py
+if %errorlevel% neq 0 (
+    echo ❌ Failed to download Hugging Face models. Please ensure you are online for the initial setup.
+    pause
+    exit /b 1
+)
 
 echo ✅ Backend setup complete!
 

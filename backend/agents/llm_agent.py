@@ -1,11 +1,11 @@
+import json
 import logging
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 import torch
 from transformers import (
-    AutoTokenizer, 
-    AutoModelForCausalLM, 
-    BitsAndBytesConfig,
-    pipeline
+    AutoTokenizer,
+    AutoModelForCausalLM,
+    pipeline,
 )
 import warnings
 
@@ -38,23 +38,10 @@ class LLMAgent:
         if self.model is None:
             logger.info(f"Loading LLM model: {self.model_name}")
             try:
-                # For smaller models (like distilgpt2, gpt2), no quantization needed
-                # TinyLlama works well without quantization but can use it for even faster inference
-                is_large_model = "phi" in self.model_name.lower() or "mistral" in self.model_name.lower() or "llama-3" in self.model_name.lower()
-                
-                quantization_config = None
-                if self.device == "cuda" and is_large_model:
-                    quantization_config = BitsAndBytesConfig(
-                        load_in_4bit=True,
-                        bnb_4bit_compute_dtype=torch.float16,
-                        bnb_4bit_use_double_quant=True,
-                        bnb_4bit_quant_type="nf4"
-                    )
-                
                 # Load tokenizer
                 self.tokenizer = AutoTokenizer.from_pretrained(
                     self.model_name,
-                    trust_remote_code=is_large_model
+                    trust_remote_code=False,
                 )
                 
                 # Set pad token if not present
@@ -62,27 +49,16 @@ class LLMAgent:
                     self.tokenizer.pad_token = self.tokenizer.eos_token
                 
                 # Load model with appropriate settings
-                load_kwargs = {
-                    "trust_remote_code": is_large_model,
-                }
-                
-                # Only add quantization for large models
-                if quantization_config:
-                    load_kwargs["quantization_config"] = quantization_config
-                    load_kwargs["device_map"] = "auto"
-                    load_kwargs["torch_dtype"] = torch.float16
-                elif self.device == "cuda":
-                    load_kwargs["torch_dtype"] = torch.float16
-                else:
-                    load_kwargs["torch_dtype"] = torch.float32
-                
+                torch_dtype = torch.float16 if self.device == "cuda" else torch.float32
+
                 self.model = AutoModelForCausalLM.from_pretrained(
                     self.model_name,
-                    **load_kwargs
+                    torch_dtype=torch_dtype,
+                    trust_remote_code=False,
                 )
                 
                 # Move model to device if not using device_map
-                if "device_map" not in load_kwargs and self.device == "cuda":
+                if self.device == "cuda":
                     self.model = self.model.to(self.device)
                 
                 # Create text generation pipeline
@@ -90,6 +66,7 @@ class LLMAgent:
                     "text-generation",
                     model=self.model,
                     tokenizer=self.tokenizer,
+                    device=0 if self.device == "cuda" else -1,
                 )
                 
                 logger.info(f"LLM model loaded successfully (size: ~{self._estimate_model_size()}MB)")
@@ -110,7 +87,6 @@ class LLMAgent:
             return 0
         try:
             param_count = sum(p.numel() for p in self.model.parameters())
-            # Rough estimate: 4 bytes per parameter for float32, 2 for float16
             bytes_per_param = 2 if self.device == "cuda" else 4
             size_mb = (param_count * bytes_per_param) / (1024 * 1024)
             return int(size_mb)
@@ -164,60 +140,112 @@ class LLMAgent:
                 'session_id': session_id,
                 'note': 'Fallback response used due to model error'
             }
+
+    async def plan_action(
+        self,
+        message: str,
+        context: Optional[Dict[str, Any]] = None,
+        available_actions: Optional[Dict[str, str]] = None,
+        max_new_tokens: int = 320,
+    ) -> Optional[Dict[str, Any]]:
+        """Ask the LLM to propose a structured action plan."""
+        try:
+            await self._load_model()
+            prompt = self._build_planner_prompt(message, context or {}, available_actions or {})
+            raw_response = await self._generate_text(prompt, max_new_tokens)
+            logger.info("LLM planner raw output: %s", raw_response.strip()[:500])
+            plan_payload = self._extract_json_block(raw_response)
+            if plan_payload is None:
+                logger.warning("LLM planner did not return JSON. Falling back to rule-based planner.")
+                return None
+            logger.info("LLM planner parsed payload: %s", plan_payload)
+            return plan_payload
+        except Exception as exc:
+            logger.error("LLM planning failed: %s", exc)
+            return None
     
     def _build_prompt(self, message: str, context: Optional[str] = None) -> str:
         """Build formatted prompt for the LLM"""
+        system_prompt = "You are a helpful AI assistant specialized in video analysis and general conversation."
         
-        # Use simpler prompts for smaller models (distilgpt2, gpt2)
-        is_small_model = "gpt2" in self.model_name.lower() or "distilgpt" in self.model_name.lower()
-        
-        # TinyLlama uses a specific chat format
-        is_tinyllama = "tinyllama" in self.model_name.lower()
-        
-        if is_tinyllama:
-            # TinyLlama chat format: <|system|>\n{system}<|user|>\n{user}<|assistant|>\n
-            system_prompt = "You are a helpful AI assistant specialized in video analysis and general conversation."
-            
-            if context:
-                prompt = f"<|system|>\n{system_prompt}\n\nVideo Context:\n{context[:1000]}</s>\n<|user|>\n{message}</s>\n<|assistant|>\n"
-            else:
-                prompt = f"<|system|>\n{system_prompt}</s>\n<|user|>\n{message}</s>\n<|assistant|>\n"
-        
-        elif is_small_model:
-            # Simpler format for smaller models
-            if context:
-                prompt = f"Context: {context[:500]}\n\nQuestion: {message}\n\nAnswer:"
-            else:
-                prompt = f"User: {message}\n\nAssistant:"
+        if context:
+            prompt = f"<|system|>\n{system_prompt}\n\nVideo Context:\n{context[:1000]}</s>\n<|user|>\n{message}</s>\n<|assistant|>\n"
         else:
-            # More structured format for larger models
-            system_prompt = """You are a helpful AI assistant specialized in video analysis and general conversation. 
-You can help with transcriptions, summaries, and answer questions about video content.
-Keep your responses clear, short, simple, concise, and helpful."""
-            
-            if context:
-                prompt = f"""<|system|>
-{system_prompt}
-
-Video Context Available:
-{context[:1000]}...
-
-<|user|>
-{message}
-
-<|assistant|>
-"""
-            else:
-                prompt = f"""<|system|>
-{system_prompt}
-
-<|user|>
-{message}
-
-<|assistant|>
-"""
+            prompt = f"<|system|>\n{system_prompt}</s>\n<|user|>\n{message}</s>\n<|assistant|>\n"
+        
+    
         
         return prompt
+
+    def _build_planner_prompt(
+        self,
+        message: str,
+        context: Dict[str, Any],
+        available_actions: Dict[str, str],
+    ) -> str:
+        """Construct planner instruction prompt enforcing structured JSON output."""
+        action_descriptions = []
+        for name, description in available_actions.items():
+            action_descriptions.append(f"- {name}: {description}")
+        actions_text = "\n".join(action_descriptions) if action_descriptions else (
+            "- transcribe_video: Transcribe the uploaded video if available.\n"
+            "- generate_pdf: Create a PDF using available transcription or summary.\n"
+            "- answer_question: Respond conversationally using the context."
+        )
+
+        context_lines = []
+        for key, value in context.items():
+            if isinstance(value, bool):
+                context_lines.append(f"{key}: {value}")
+            elif value is None:
+                continue
+            else:
+                text = str(value)
+                if len(text) > 160:
+                    text = text[:157] + "..."
+                context_lines.append(f"{key}: {text}")
+        context_text = "\n".join(context_lines) if context_lines else "(no additional context)"
+
+        system_instruction = (
+            "You are an orchestration planner. You MUST reply with a JSON object only. "
+            "Choose the best action to satisfy the user request. "
+            "Allowed action_types: transcribe_video, generate_pdf, answer_question. "
+            "Valid status values: needs_clarification, requires_confirmation, ready_to_execute. "
+            "Always include fields: action_type (string), status (string), parameters (object), "
+            "missing_params (array of strings), clarification_message (string or null), "
+            "confidence (number between 0 and 1). "
+            "If you need more info from the user, set status to needs_clarification and "
+            "provide a concise clarification_message. "
+            "Transcription is always performed in English; do NOT ask for a language parameter." 
+        )
+
+        prompt = (
+            f"<|system|>\n{system_instruction}</s>\n"
+            f"<|user|>\n"
+            f"User request: {message}\n\n"
+            f"Session context:\n{context_text}\n\n"
+            f"Available actions:\n{actions_text}\n\n"
+            "Respond with JSON only, without explanation.\n"
+            "</s>\n"
+            "<|assistant|>\n"
+        )
+
+        return prompt
+
+    def _extract_json_block(self, response: str) -> Optional[Dict[str, Any]]:
+        """Best-effort extraction of the first JSON object from model output."""
+        start = response.find('{')
+        end = response.rfind('}')
+        if start == -1 or end == -1 or end <= start:
+            return None
+        candidate = response[start:end + 1]
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            logger.warning("Failed to parse planner JSON: %s", candidate)
+        return None
     
     async def _generate_text(self, prompt: str, max_new_tokens: int) -> str:
         """Generate text using the loaded model"""
