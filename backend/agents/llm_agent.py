@@ -24,9 +24,6 @@ class LLMAgent:
         Args:
             model_name: Hugging Face model identifier
                        Default: TinyLlama/TinyLlama-1.1B-Chat-v1.0 (1.1B params, ~2.2GB, optimized for chat)
-                       Other options:
-                       - "distilgpt2" (82M params, ~350MB, very fast but basic)
-                       - "microsoft/Phi-3-mini-4k-instruct" (3.8B params, much larger/slower)
         """
         self.model_name = model_name
         self.tokenizer = None
@@ -196,7 +193,7 @@ class LLMAgent:
             # More structured format for larger models
             system_prompt = """You are a helpful AI assistant specialized in video analysis and general conversation. 
 You can help with transcriptions, summaries, and answer questions about video content.
-Keep your responses clear, concise, and helpful."""
+Keep your responses clear, short, simple, concise, and helpful."""
             
             if context:
                 prompt = f"""<|system|>

@@ -8,6 +8,8 @@ import torchaudio
 from transformers import WhisperProcessor, WhisperForConditionalGeneration
 from moviepy import VideoFileClip
 import tempfile
+import wave
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -98,25 +100,20 @@ class TranscriptionAgent:
     async def _extract_audio(self, video_path: str) -> str:
         """Extract audio from video file"""
         try:
-            # Create temporary file for audio
             audio_path = video_path.replace('.mp4', '.wav')
-            
-            # Extract audio using moviepy
-            video = VideoFileClip(video_path)
-            audio = video.audio
-            
-            if audio is None:
-                raise ValueError("No audio track found in video")
-            
-            # Save as WAV file
-            audio.write_audiofile(audio_path, verbose=False, logger=None)
-            
-            # Cleanup
-            audio.close()
-            video.close()
-            
+
+            with VideoFileClip(video_path) as video:
+                audio = video.audio
+                if audio is None:
+                    raise ValueError("No audio track found in video")
+
+                try:
+                    audio.write_audiofile(audio_path)
+                finally:
+                    audio.close()
+
             return audio_path
-            
+
         except Exception as e:
             logger.error(f"Audio extraction failed: {str(e)}")
             raise
@@ -125,7 +122,13 @@ class TranscriptionAgent:
         """Preprocess audio for Whisper model"""
         try:
             # Load audio with torchaudio
-            waveform, sample_rate = torchaudio.load(audio_path)
+            try:
+                waveform, sample_rate = torchaudio.load(audio_path)
+            except RuntimeError as exc:
+                if "TorchCodec" in str(exc):
+                    waveform, sample_rate = self._load_audio_with_wave(audio_path)
+                else:
+                    raise
             
             # Convert to mono if stereo
             if waveform.shape[0] > 1:
@@ -137,7 +140,7 @@ class TranscriptionAgent:
                 waveform = resampler(waveform)
             
             # Convert to numpy for processor
-            audio_array = waveform.squeeze().numpy()
+            audio_array = waveform.squeeze().cpu().numpy()
             
             # Process with Whisper processor
             inputs = self.processor(
@@ -187,3 +190,38 @@ class TranscriptionAgent:
             'device': self.device,
             'loaded': self.model is not None
         }
+
+    def _load_audio_with_wave(self, audio_path: str) -> tuple[torch.Tensor, int]:
+        """Fallback WAV loader when torchcodec is unavailable."""
+        with wave.open(audio_path, "rb") as wav_file:
+            sample_rate = wav_file.getframerate()
+            num_channels = wav_file.getnchannels()
+            sample_width = wav_file.getsampwidth()
+            audio_frames = wav_file.readframes(wav_file.getnframes())
+
+        dtype_map = {
+            1: np.uint8,
+            2: np.int16,
+            3: None,
+            4: np.int32,
+        }
+
+        dtype = dtype_map.get(sample_width)
+        if dtype is None:
+            raise ValueError(f"Unsupported sample width: {sample_width}")
+
+        audio_np = np.frombuffer(audio_frames, dtype=dtype)
+
+        if sample_width == 1:
+            audio_np = audio_np.astype(np.float32)
+            audio_np = (audio_np - 128.0) / 128.0
+        else:
+            info = np.iinfo(dtype)
+            scale = max(abs(info.min), info.max)
+            audio_np = audio_np.astype(np.float32) / float(scale)
+
+        if num_channels > 1:
+            audio_np = audio_np.reshape(-1, num_channels).mean(axis=1)
+
+        waveform = torch.from_numpy(audio_np).unsqueeze(0)
+        return waveform, sample_rate
